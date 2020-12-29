@@ -1,0 +1,829 @@
+---
+title: "Counterfactual DM in maltreated kids: Clean Data"
+output: html_document
+author: Inge Huijsmans
+---
+
+### Task and data information  
+__Task: Counterfactual Decision Making__   
+Baskin-Sommers, A., Stuppy-Sullivan, A. M., & Buckholtz, J. W. (2016). Psychopathic individuals exhibit but do not avoid regret during counterfactual decision making. Proceedings of the National Academy of Sciences, 113(50), 14438-14443.
+
+Link to task:  
+http://snplab.fas.harvard.edu/adcf/  
+
+Links to data:  
+usern: sdlab   
+passw: stressDEV1   
+http://snplab.fas.harvard.edu/adcf/data    
+http://snplab.fas.harvard.edu/adcfremote/data    
+
+Google drive folder Frankie & Mahalia:  
+https://drive.google.com/drive/folders/100at88UR1CjjLLPHCn1el5LpHb7WwfTs
+
+
+### Measures we should clean in this task
+Per trial:  
+-choice (W1/W2)  
+-affect rating 1  (1-100)  
+-affect rating 2  (1-100)  
+
+### How do we clean?
+Strategy: be as conservative as possible with rejecting participants Only reject participants if data suggests it is absolutely necessary.  
+
+When do I consider removing a participant:  
+
+1. __Missingess.__   
+Delete participants with incomplete data.    
+
+2. __Inattention.__  
+If participants show up consistently based on the following measures, consider rejection. However, be as forgiving as possible on all measures.  
+- Practice questions (#mistakes)  
+- RTs: too fast RTs, faster than 200ms  
+- RTs: very slow RTs, slower than mean + 3SD  
+- Choice consistency: always chooce the same wheel  
+- Choice consistency: no variability in affect measures (eg. always select 0.50)  
+- Choice consistency: always choose same affect on rating 1 and 2  
+- Choice randomness: Participants that do not reliably pick highest EV are suspicious
+
+
+#### Overview table  
+At the end of the document I give an overview of all participants that failed any of the checks. Based on this I choose to delete some. No need to keep track of who-did-what in the document.  
+
+#### Problems to discuss:  
+
+Choice consistency: always choose same affect on rating 1 and 2  
+measure: affect rating 1 - affect rating 2 == 0     
+- Some participants never (n = 5), or rarely (less than 10% of trials, n = 13) adjust their first affect rating after receiving feedback about the outcome that they could have had in the second affect rating.  
+- This might be an artifact of the experiment program. After submitting affect rating 1, this value is saved and used as start point for affect rating 2. Therefore, participants could make it an easy strategy not to change affect rating 1.  
+- Since regret is based on the difference between affect 1 affect 2, this might be quite problematic and reduce interesting variance in our task. Will we keep these participants in the data for analysis?  
+
+
+#### Ideas during cleaning (notes to self)  
+- What to do about floor/ceiling effects in affect rating.  
+- Affect rating 2 is confounded with affect rating 1, perhaps use a difference measure
+- Participants seem to have strategies. Can we define them with a computational model?
+- How to define risk/loss aversion in this task?  
+
+
+
+#### Setup R
+```{r load packages, message = FALSE, warning = FALSE }
+
+options(repos = c(CRAN = "http://cran.rstudio.com"))
+#install.packages('lme4', dependencies=TRUE, repos='https://ftp.ussg.iu.edu/CRAN/')
+
+require(plyr)      # for ddply()
+require(ggplot2)
+require(tidyr)     #for long to wide, gather & spread <3
+require(knitr)   #for nice table printing
+
+options(digits=20)
+rm(list=ls())
+
+
+#Set wd Harvard
+#wd <- '/Users/ingehuijsmans/OneDrive - Harvard University/KidsDecision/'
+#Set wd Wageningen
+wd <- '/Users/rhmhuijsmans/inge/OneDrive - Harvard University/KidsDecision/'
+dataDir <- paste(wd, 'data/csv/', sep = '')
+analysesDir <- paste(wd, 'analyses/', sep = '')
+plotsDir <- paste(wd, 'plots/', sep = '')
+
+#Function for axis rounding
+twoDecimals <- function(x) sprintf("%.2f", x)
+
+#Set colors
+fivecolors <- c('#003f5c','#58508d','#bc6090','#ff6361','#ffa600')
+twocolors <- fivecolors[c(2,4)]
+sevencolors <- c('#C70039','#FF5733', '#FF8D1A','#FFC300', '#EDDD53', '#ADD45C','#57C785')
+
+
+```
+
+
+#### Load Data
+-There are 14 empty files. I did not look into these further and excluded them.  
+-37597 is giving problems loading data  
+In the data of ps 37597 there was an extra line added as trial nr 55 with as only data a fail.
+Fails count how many fails ps made during the comprehension check. I did not find out how this line could have been created yet.
+This line of data did not include any behavioral data related to task performance. Therefore I removed the line.
+
+```{r load data, warning = FALSE}
+
+filenames <- list.files(dataDir)
+datafiles <- data.frame(fileName = filenames, fileDir = paste(dataDir,filenames, sep = ''))
+
+datareader <- function(x){
+  data_new <- read.table(as.character(x[,'fileDir']), quote = "\"", sep = ",", header = TRUE)
+  return(data_new)
+}
+
+totalData <- ddply(datafiles, .(fileName), datareader)
+
+data <- subset(totalData, trial_type == 'gillan-layout-ad')
+practice <- subset(totalData, trial_type == 'textEnterComp')
+
+#Remove that line of ps 37597
+data <- subset(data, is.na(fails) | fails != 2)
+
+```
+
+#### Give useful names to columns
+Create variables of interest  
+EV: expected value  
+R: regret  
+D: dissapointment  
+
+```{r create variables}
+
+#Cleanup
+data$outcomeChoice <- 999
+data$outcomeMissed <- 999
+data[data$chosenCircle =='circle1',]$outcomeChoice <- data[data$chosenCircle =='circle1',]$Circle1Outcome
+data[data$chosenCircle =='circle2',]$outcomeChoice <- data[data$chosenCircle =='circle2',]$Circle2Outcome
+data[data$chosenCircle =='circle1',]$outcomeMissed <- data[data$chosenCircle =='circle1',]$Circle2Outcome
+data[data$chosenCircle =='circle2',]$outcomeMissed <- data[data$chosenCircle =='circle2',]$Circle1Outcome
+
+dataClean <-data.frame("subject"= data$subject,
+                       "trial"= data$trial_index,
+                       "x1"= data$Circle1Num1,
+                     "y1" = data$Circle1.Num2, 
+                     "p"= data$c1N1p, 
+                     "x2"= data$Circle2Num1,
+                     "y2"= data$Circle2Num2,
+                     "q"= data$c2N1p, 
+                     "trialCondition"= data$trial.condition,
+                     "key1"= data$key_press1,
+                     "choiceRT"= data$rt1,
+                     "chosenCircle"= data$chosenCircle,
+                     "unChosenCircle"= data$unChosenCircle,
+                     'outcomeChoice' = data$outcomeChoice,
+                     'outcomeMissed' = data$outcomeMissed,
+                     "affect1"= data$first.rating,
+                     "affect1RT"= data$rating.response.1.RT,
+                     "affect2"= data$second.rating,
+                     "affect2RT"= data$rating.response.2.RT,
+                     "missedTrial"= data$missed.whole.trial
+                     )
+    
+dataClean$EV <- (((dataClean$x1*dataClean$p) + ((1-dataClean$p)*dataClean$y1)) - ((dataClean$x2*dataClean$q) + ((1-dataClean$q)*dataClean$y2)))
+dataClean$D <- (((dataClean$x2-dataClean$y2)*(1-dataClean$q))-((dataClean$x1-dataClean$y1)*(1-dataClean$p)))
+dataClean$R <- (((dataClean$y1-dataClean$x2)- (dataClean$y2-dataClean$x1)))
+
+dataClean$f_outcomeChoice <- factor(dataClean$outcomeChoice)
+dataClean$changeAffect <- dataClean$affect2 - dataClean$affect1
+dataClean$s_outcomeChoice <- dataClean$outcomeChoice/sd(dataClean$outcomeChoice)
+dataClean$sc_EV <- (dataClean$EV - mean(dataClean$EV))/sd(dataClean$EV)
+dataClean$n_chosenCircle <- ((as.numeric(dataClean$chosenCircle)-2)*-1)+1
+dataClean$f_chosenCircle <- factor(dataClean$chosenCircle, levels = c('circle1','circle2'), labels = c('Wheel 1', 'Wheel 2'))
+
+
+#chance counterfactual
+dataClean$chanceCF <- 999
+#When choice is Wheel1
+dataClean[(dataClean$chosenCircle == 'circle1') & (dataClean$outcomeChoice == dataClean$x1),]$chanceCF <- dataClean[dataClean$chosenCircle == 'circle1' & dataClean$outcomeChoice == dataClean$x1,]$x1 - dataClean[dataClean$chosenCircle == 'circle1' & dataClean$outcomeChoice == dataClean$x1,]$y1
+
+dataClean[(dataClean$chosenCircle == 'circle1') & (dataClean$outcomeChoice == dataClean$y1),]$chanceCF <- dataClean[dataClean$chosenCircle == 'circle1' & dataClean$outcomeChoice == dataClean$y1,]$y1 - dataClean[dataClean$chosenCircle == 'circle1' & dataClean$outcomeChoice == dataClean$y1,]$x1
+
+#When choice is Wheel2
+dataClean[(dataClean$chosenCircle == 'circle2') & (dataClean$outcomeChoice == dataClean$x2),]$chanceCF <- dataClean[dataClean$chosenCircle == 'circle2' & dataClean$outcomeChoice == dataClean$x2,]$x2 - dataClean[dataClean$chosenCircle == 'circle2' & dataClean$outcomeChoice == dataClean$x2,]$y2
+
+dataClean[(dataClean$chosenCircle == 'circle2') & (dataClean$outcomeChoice == dataClean$y2),]$chanceCF <- dataClean[dataClean$chosenCircle == 'circle2' & dataClean$outcomeChoice == dataClean$y2,]$y2 - dataClean[dataClean$chosenCircle == 'circle2' & dataClean$outcomeChoice == dataClean$y2,]$x2
+
+#Agent counterfactual
+dataClean$agentCF <- dataClean$outcomeChoice - dataClean$outcomeMissed
+
+```
+
+# Start data cleanup
+## 1. Missingness
+There are 139 datafiles that contain data  
+129 finished the entire experiment (55 trials)  
+10 participants did not finish the experiment   
+Continue with complete data only   
+
+
+```{r data cleaning: Missingness}
+
+completedTrials <- data.frame(table(dataClean$subject))
+#129 participants who finished all trials
+nrow(subset(completedTrials, Freq == 55))
+
+#10 participants who did not finish all trials
+nrow(subset(completedTrials, Freq <  55))
+notCompleteSubs <- subset(completedTrials, Freq <  55)$Var1
+
+p <- ggplot(subset(completedTrials, Freq <  55), aes(Freq)) + geom_histogram(bins = 45,color = 'black', fill = fivecolors[1]) + theme_bw() +
+  labs(y = '# Participants', x = 'Number of trials completed', title = 'Participants who did not complete the full experiment')
+
+p
+
+ggsave(paste(plotsDir,"Missingness.png", sep = ''),  p, width = 6, height = 4, dpi = 150, units = "in", device='png')
+
+#Remove these participants
+dataClean <- subset(dataClean, !(subject %in% notCompleteSubs))
+
+
+```
+
+## 2. Attention checks
+
+### Practice questions
+Participants repeatedly answered practice questions until they got the right answer. It seems kids were pretty good at the task. There are four kids who gave wrong answers during this comprehension check.
+
+Failed practice questions: 14055 20264 31657 54571
+
+
+```{r practice rounds}
+
+#Show ps who did not pass the questions first try
+failedPractice <- subset(practice, failsQ1 >0 | failsQ2 >0 |failsQ3 >0 | failsQ4 >0)
+subset(failedPractice, select = c('subject', 'failsQ1','failsQ2','failsQ3','failsQ4'))
+failedPracticeSubjects <- failedPractice$subject
+
+failedPracticeSubjects
+
+```
+
+### Reaction times
+There are three measures with an associated RT:  
+1. Choice  
+2. Affect 1  
+3. Affect 2  
+
+#### 1. Choice RTs
+M(RT) = 4.09s, SD(RT) = 7.93s  
+-1 participant with 2 datapoints faster than 200 ms.  
+-33 measures slower than 3SD from mean.  
+-17 participants gave the slow measures.  
+
+Suspect too fast RT: 48170
+
+```{r data cleaning: RTs}
+
+mean(dataClean$choiceRT)
+sd(dataClean$choiceRT)
+
+#One ps with 2 values below 200 ms: 48170
+toofastChoiceRT <- unique(subset(dataClean, choiceRT <200)$subject)
+
+#threshold for outliers
+tooslowChoiceRT <- (mean(dataClean$choiceRT) + (3*sd(dataClean$choiceRT)))
+slowRTchoice <- subset(dataClean, choiceRT > tooslowChoiceRT)
+
+#how many outliers
+nrow(slowRTchoice)
+#how many ps
+length(unique(slowRTchoice$subject))
+#Save subject nrs with outliers
+slowRTchoiceSubjects <- unique(slowRTchoice$subject)
+#How many outliers per subject
+table(slowRTchoice$subject)
+
+```
+
+#### Affect rating 1 RTs
+M(RT) = 3.54s, SD(RT) = 11.21s  
+- 0 participants with datapoints faster than 200 ms.    
+- 9 measures slower than 3SD from mean.  
+- 5 participants gave the slow measures.  
+
+```{r data cleaning RT Affect1}
+
+mean(dataClean$affect1RT)
+sd(dataClean$affect1RT)
+
+#No ps with values below 200 ms
+nrow(subset(dataClean, affect1RT <200))
+
+#threshold for outliers
+tooslowAffect1RT <- (mean(dataClean$affect1RT) + (3*sd(dataClean$affect1RT)))
+slowRTaffect1 <- subset(dataClean, affect1RT > tooslowAffect1RT)
+#how many outliers
+nrow(slowRTaffect1)
+#how many ps
+length(unique(slowRTaffect1$subject))
+#Save subject nrs with outliers
+slowRTaffect1Subjects <- unique(slowRTaffect1$subject)
+#How many outliers per subject
+table(slowRTaffect1$subject)
+
+
+
+```
+#### Affect rating 2 RTs
+M(RT) = 6.24s, SD(RT) = 12.25s  
+- 0 participants with datapoints faster than 200 ms.    
+- 14 measures slower than 3SD from mean.  
+- 10 participants gave the slow measures.  
+Note. The mean RT here is quite long. I personally though this should be an easy question...
+
+```{r data cleaning RT Affect2}
+
+mean(dataClean$affect2RT)
+sd(dataClean$affect2RT)
+
+#No ps with values below 200 ms
+nrow(subset(dataClean, affect2RT <200))
+
+#threshold for outliers
+tooslowAffectRT2 <- (mean(dataClean$affect2RT) + (3*sd(dataClean$affect2RT)))
+slowRTaffect2 <- subset(dataClean, affect2RT > tooslowAffectRT2)
+#how many outliers
+nrow(slowRTaffect2)
+#how many ps
+length(unique(slowRTaffect2$subject))
+#Save subjects with outliers
+slowRTaffect2Subjects <- unique(slowRTaffect2$subject)
+#How many outliers per subject
+table(slowRTaffect2$subject)
+
+
+```
+
+Failed practice questions: 14055 20264 31657 54571  
+Suspect too fast RT: 48170
+
+#### Are some participants consistently slow on all 3 measures?
+Wow... some participants have average response times of 30 seconds. What's up here...  
+Participants 14055 31657 57344  9878 have outliers on all 3 measures.
+
+```{r data cleaning RT overall}
+
+#These participants are outliers in all three measures
+#31657 57344  9878
+slowChoiceAf1pp <- slowRTchoiceSubjects[slowRTchoiceSubjects %in% slowRTaffect1Subjects] 
+
+#14055 31657 57344  9878
+slowChoiceAf2pp <- slowRTchoiceSubjects[slowRTchoiceSubjects %in% slowRTaffect2Subjects]
+
+#31657 46193 57344 57761  9878
+slowAf1Af2pp <- slowRTaffect1Subjects[slowRTaffect1Subjects %in% slowRTaffect2Subjects]
+
+slowRTsubjects <- c(slowChoiceAf1pp, slowChoiceAf2pp, slowAf1Af2pp)
+
+#Participants 14055 31657 57344  9878 are my suspects
+dataClean$suspects <- 'no'
+dataClean[dataClean$subject %in% slowRTsubjects, ]$suspects <- 'yes'
+
+#What are participants on average doing?
+meanRTs <- ddply(dataClean, .(subject, suspects), summarize, Choice = mean(choiceRT), Affect1 = mean(affect1RT), Affect2 = mean(affect2RT))
+meanRTs_L <- gather(meanRTs, measurement, RT, Choice:Affect2, factor_key=TRUE)
+
+p <- ggplot(meanRTs_L, aes(measurement, RT/1000, group = subject, color = suspects)) + geom_point() +geom_line() + 
+  theme_bw() + labs(x = 'RT measurement', y = 'Mean RT (s)') + scale_color_manual(values = twocolors)
+ggsave(paste(plotsDir,"slowParticipants.png", sep = ''),  p, width = 6, height = 4, dpi = 150, units = "in", device='png')
+
+p 
+
+```
+
+Format data for plotting. Create dataframe so I an plot RTs of each of the measures per participant.
+
+```{r outliers RT individual data}
+
+
+detectOutlierRT <- function(x){
+  x$outlierRT1 <- 0
+  if (any(x$choiceRT > (mean(x$choiceRT) + 3*sd(x$choiceRT)))) {
+    x[x$choiceRT > (mean(x$choiceRT) + 3*sd(x$choiceRT)),]$outlierRT1 <- 1
+  }
+  x$outlierAffect1 <- 0
+  if (any(x$affect1RT > (mean(x$affect1RT) + 3*sd(x$affect1RT)))) {
+    x[x$affect1RT > (mean(x$affect1RT) + 3*sd(x$affect1RT)),]$outlierAffect1 <- 1
+  }
+  x$outlierAffect2 <- 0
+  if (any(x$affect2RT > (mean(x$affect2RT) + 3*sd(x$affect2RT)))){
+    x[x$affect2RT > (mean(x$affect2RT) + 3*sd(x$affect2RT)),]$outlierAffect2 <- 1
+  }
+  return(x)
+}
+
+x <- subset(dataClean, subject == 11613)
+
+outlierAverage <- detectOutlierRT(dataClean)
+outlierAverageSubs <- subset(outlierAverage, select = c('subject', 'trial','outlierRT1','outlierAffect1','outlierAffect2'))
+names(outlierAverageSubs) <- c('subject', 'trial','choiceRT','affect1RT','affect2RT')
+dataOutlierRT_L <- gather(outlierAverageSubs, measurement, outlierRT, choiceRT:affect2RT)
+
+dataRT <- gather(subset(dataClean, select = c('subject', 'trial', 'choiceRT','affect1RT','affect2RT')), measurement, RT, choiceRT:affect2RT)
+dataRT_L <- merge(dataRT, dataOutlierRT_L, by = c('subject','trial', 'measurement'))
+dataRT_L$outlierRT <- factor(dataRT_L$outlierRT)
+
+outlierRTSubjects <- unique(c(slowRTchoiceSubjects, slowRTaffect1Subjects, slowRTaffect1Subjects))
+#19 participants with outliers
+length(outlierRTSubjects)
+
+```
+
+
+#### Look at individual datapoints that are too slow per participant
+
+Plot individual data from all subjects that have outliers. Are they consistently slow on all measures? Do they have 1 or 2 extreme outliers? From these individual plots, see what stands out. Split up data of 19 participants who have outliers into four sections.  
+
+How to read these plots:  
+- Columns represent data of 1 participant
+- Rows represent the RTs of seperate measures (choice, affect 1, affect 2)
+
+Conclusions:  
+Participant 31657 (15 min) and 57344 (6 min) have exceptionally long outliers reaction times  
+
+**Section 1:**   
+
+All outlying RTs fall within a minute. Don't exclude any of these ppts
+```{r plot RT section 1}
+
+#Save ppt numbers
+slowRTdatapoint_pp <- c()
+
+#Save sections for ppt
+p1 <- ggplot(dataRT_L[dataRT_L$subject %in% outlierRTSubjects[c(1:5)],], aes(RT/1000, fill = outlierRT)) + 
+  facet_wrap(measurement~subject, nrow = 3) + 
+  geom_histogram(bins =  30, position = 'dodge') + theme_bw()+
+  scale_fill_manual(values = twocolors) +
+  labs(x = 'Time (seconds)', title = 'Participants with outlier RT values (part 1)', y = '# trials', fill = 'Outlier')
+ggsave(paste(plotsDir,"slowParticipantsPt1.png", sep = ''),  p1, width = 14, height = 8, dpi = 150, units = "in", device='png')
+p1
+
+```
+
+**Section 2:**  
+
+Look at x-axis, scale chages drastically.  
+-> 31657 has two 15 minute outliers
+```{r plot RT section 2}
+
+p2 <- ggplot(dataRT_L[dataRT_L$subject %in% outlierRTSubjects[c(6:10)],], aes(RT/1000/60, fill = outlierRT)) + 
+  facet_wrap(measurement~subject, nrow = 3) + 
+  geom_histogram(bins =  30, position = 'dodge') + theme_bw()+
+  scale_fill_manual(values = twocolors) +
+  labs(x = 'Time (minutes)', title = 'Participants with outlier RT values (part 2)', y = '# trials', fill = 'Outlier')
+ggsave(paste(plotsDir,"slowParticipantsPt2.png", sep = ''),  p2, width = 14, height = 8, dpi = 150, units = "in", device='png')
+p2
+
+slowRTdatapoint_pp <- c(slowRTdatapoint_pp, 31657)
+
+```
+
+**Section 3:**  
+
+Same as section 2. Huge x scales.  
+-> 57344 has outliers of multiple minutes 
+```{r plot RT section 3}
+p3 <- ggplot(dataRT_L[dataRT_L$subject %in% outlierRTSubjects[c(11:15)],], aes(RT/1000/60, fill = outlierRT)) + 
+  facet_wrap(measurement~subject, nrow = 3) + 
+  geom_histogram(bins =  30, position = 'dodge') + theme_bw()+
+  scale_fill_manual(values = twocolors) +
+  labs(x = 'Time (minutes)', title = 'Participants with outlier RT values (part 3)', y = '# trials', fill = 'Outlier')
+ggsave(paste(plotsDir,"slowParticipantsPt3.png", sep = ''),  p3, width = 14, height = 8, dpi = 150, units = "in", device='png')
+p3
+
+slowRTdatapoint_pp <- c(slowRTdatapoint_pp, 57344)
+
+```
+
+**Section 4:**  
+
+Same as section 1. Some long RTs, nothing much over a minute. 
+```{r plot RT section 4}
+p4 <- ggplot(dataRT_L[dataRT_L$subject %in% outlierRTSubjects[c(16:19)],], aes(RT/1000/60, fill = outlierRT)) + 
+  facet_wrap(measurement~subject, nrow = 3) + 
+  geom_histogram(bins =  30, position = 'dodge') + theme_bw()+
+  scale_fill_manual(values = twocolors) +
+  scale_x_continuous(labels = twoDecimals) +
+  labs(x = 'Time (minutes)', title = 'Participants with outlier RT values (part 4)', y = '# trials', fill = 'Outlier')
+ggsave(paste(plotsDir,"slowParticipantsPt4.png", sep = ''),  p4, width = 14, height = 8, dpi = 150, units = "in", device='png')
+
+p4
+
+```
+
+__notable subjects so far__  
+Failed practice questions: 14055 20264 31657 54571  
+Suspect too fast RT: 48170  
+Suspects from average RTs: 14055 31657 57344  9878  
+Suspects individual datapoints RTs: 31657 57344  
+
+### Choice consistency: Choice (W1/W2)
+
+Did participants choose different wheels?  
+Nobody choose consistently the same wheel 
+
+
+```{r choice consistency}
+
+#Wheel consistency
+choiceConsistency <- data.frame(table(dataClean$subject, dataClean$chosenCircle))
+names(choiceConsistency) <- c('subject', 'w', 'freq')
+choiceConsistency <- subset(choiceConsistency, w == 'circle1')
+choiceConsistency$freq <- choiceConsistency$freq/55
+
+range(choiceConsistency$freq)
+
+ggplot(choiceConsistency, aes(freq)) + geom_histogram(binwidth = 0.02, color = 'black', fill = fivecolors[1])+ theme_bw() + scale_x_continuous(labels = twoDecimals) + labs(x = 'P(choice W1)', title = 'Probability of choosing wheel 1 per participant')
+
+```
+
+
+### Affect ratings consistency: Plots
+Sometimes, uninterested participants just hit enter and will not move the slider. In this experiment, the slider to indicate affect rating 1 started at the same point (50) on each trial. I plot participants and give suspected participants based on visual inspection a different color (red).    
+
+For future reference: think about starting the slider handle at a random start point each trial. This avoids anchoring & laziness confusions.  
+
+Did participants change their affect rating during the experiment?     
+-Three participants seem uninterested. They showed very consistent ratings in both affect rating 1 and 2. Subjects: 15779, 25291, 59491  
+-For subject 27533 consistent affect 1 choice (50) seems a strategy. This participant showed variability in affect rating 2.  
+
+__affect rating 1:__
+
+```{r affect rating 1 per subject, fig.height=21, fig.width=7}
+
+ppnrsInterestAffect1 <- c(15779, 25291, 27533, 59491)
+dataClean$affect1Suspects <- 0
+dataClean[dataClean$subject %in% ppnrsInterestAffect1,]$affect1Suspects <- 1
+dataClean$affect1Suspects <- factor(dataClean$affect1Suspects)
+ggplot(dataClean, aes(affect1, fill = affect1Suspects)) + geom_histogram(binwidth = 1) + facet_wrap(~subject, ncol = 6) + theme_bw() + labs(x = 'Affect rating 1', fill = 'Suspect')+ scale_fill_manual(values = twocolors)
+
+```
+
+How did participants do on the second affect rating?   
+__affect rating 2:__
+
+```{r affect rating 2 per subject, fig.height=21, fig.width=7}
+
+ppnrsInterestAffect2 <- c(15779, 25291, 59491)
+dataClean$affect2Suspects <- 0
+dataClean[dataClean$subject %in% ppnrsInterestAffect2,]$affect2Suspects <- 1
+dataClean$affect2Suspects <- factor(dataClean$affect2Suspects)
+ggplot(dataClean, aes(affect2, fill = affect2Suspects)) + geom_histogram(binwidth = 1) + facet_wrap(~subject, ncol = 6) + theme_bw() + labs(x = 'Affect rating 2', fill = 'Suspect')+ scale_fill_manual(values = twocolors)
+
+```
+
+### Affect ratings consistency: Data  
+Across both affect rating 1 and affect rating 2 there are some participants that choose 50 all the time. Here I look at participants who choose the same affect rating in rating 1 & 2 across the experiment.  
+Too low variability, very likely uninterested to do the task: 15779, 25291, 59491  
+
+```{r affect ratings variability}
+
+#Affect rating counts
+affect1Counts <- data.frame(table(dataClean$subject, dataClean$affect1))
+names(affect1Counts) <- c('subject', 'value', 'count')
+affect1Counts$rating <- 'affect1'
+affect2Counts <- data.frame(table(dataClean$subject, dataClean$affect2))
+names(affect2Counts) <- c('subject', 'value', 'count')
+affect2Counts$rating <- 'affect2'
+affectCounts <- rbind(affect1Counts, affect2Counts)
+
+#Participants that only change their ratings on 80% of trials
+subset(affectCounts, count >(55*0.80))
+sameAffectR80ppnrs <- unique(subset(affectCounts, count >(55*0.80))$subject)
+
+dataAffect_L <- gather(subset(dataClean, select = c('subject', 'trial','affect1','affect2')), rating, value, affect1:affect2)
+
+#Show the ratings on Affect 1 and Affect 2 of suspicious subjects
+ggplot(subset(dataAffect_L, subject %in% sameAffectR80ppnrs), aes(trial, value, color = rating)) + 
+  facet_wrap(~subject)+ theme_bw()+ scale_color_manual(values = twocolors) +
+  geom_point(alpha = 0.5, size = 4)
+
+#Subjects that match visual inspection:
+#15779 
+#25291
+#59491
+noVarAffectRppnrs <- c(15779, 25291, 59491)
+```
+
+
+### Choice consistency: Do particpants update their affect rating in the second rating?  
+Not only can participants choose to consequently select 0.5 as their affect rating. It is also possible that participants show variability in affect, but the exact same variability on affect rating 1 and 2.  
+
+This check is important in the context of this task. Counterfactual thinking is based on the idea that people feel regret when they see the outcome that they could have had, precisely "an aversive emotional state that is elicited by adiscrepancy in the outcome values of chosen vs. unchosen actions." (from buckholtz, 2016, PNAS).  
+
+__Test:__ affect1 - affect2 > 0  
+__Outcome:__ Well... It seems that participants don't really change their affect ratings that much.. Let's explore further.
+
+```{r change affect rating}
+
+ggplot(dataClean, aes(f_outcomeChoice, changeAffect, fill = f_outcomeChoice)) + 
+  geom_violin() + 
+  scale_fill_manual(values = fivecolors) +
+  theme_bw() + labs(x = '', y = 'Affect rating 1 - Affect rating 2', fill = 'Outcome')
+
+
+```
+
+
+__What is going on here?__
+
+It seems that this is quite a common strategy. Participants seldom change affect rating 2. That seems problematic to me.       
+- Some participants never (n = 7), or rarely (less than 10% of trials, n = 21) adjust their first affect rating after receiving feedback about the outcome that they could have had in the second affect rating.   
+
+__This might be an artifact of the experiment program!__  
+After submitting affect rating 1, this value is saved and used as start point for affect rating 2. Therefore, participants could make it an easy strategy not to change affect rating 1. At the top of this file is the link to the experiment if you want to check this for yourself.  
+
+```{r change affect rating as individual strategy}
+
+#Are there participants that never change the rating?
+notchanged <- data.frame(table(subset(dataClean, changeAffect == 0)$subject))
+names(notchanged) <- c('subject','freq')
+
+#7 participants never changed their second affect rating. What was their affect?
+nrow(notchanged[notchanged$freq == 55,])
+#21 participants changed their affect rating in less than 10% of trials
+nrow(notchanged[notchanged$freq > 55*0.9,])
+
+#Save subject numbers
+noAffect12ChangeSubs <- as.numeric(as.character(notchanged[notchanged$freq == 55,]$subject))
+noAffect12ChangeSubs90 <- as.numeric(as.character(notchanged[notchanged$freq > 55*0.9,]$subject))
+
+#Distribution
+ggplot(notchanged, aes(freq)) + geom_histogram(binwidth = 1, color = 'black', fill = fivecolors[1]) + 
+  theme_bw() + labs(x = 'Number of trials in which participants did not update affect rating 2.\nRed line indicates 90% of trials.', title = 'Each count indicates data of 1 participant') + 
+  geom_vline(xintercept = 49.5, size = 2, color = fivecolors[4])
+```
+
+
+# Is choice (W1/W2) and affect (1 & 2) influenced by experment variables for each participant?
+
+As sanity check, it seems reasonable to assume that participants choice and affect are influenced by experiment variables. Look at main experiment effects per participant. Perhaps their behavior is not predicted by EV, but by D or R etc.   
+
+Per participant, calculate 2 things:  
+Choice (W1/W2) ~ EV + R + D (logistic regression)   
+Affect (1 & 2) ~ outcome (MANOVA)   
+#If affect 1 and affect 2 show no difference, do just an uni anova
+
+Three particpants give problems fitting the choice model.  
+Choice (W1/W2) ~ EV + R + D  
+- Complete separartion of EV ~ choice for these participants. EV perfectly explains choice. Replace pvalue with 0.  
+One participant gave problems fitting the affect model.
+Affect (1 & 2) ~ outcome    
+- This participant choose consitently 0.5 as outcome, therefore no variance in the model. 
+```{r  main experiment effects per participant}
+
+#Function that does a logistic regression per participant. Output is beta weight and p-value of EV in choice~EV
+ExperimentEffects_fun <- function(x) {
+  
+  #print(unique(x$subject))
+  
+  #Predict choice from EV R D
+  tempMod_Choice <- glm(n_chosenCircle ~ EV + R + D, data = x, family= binomial)
+  p_tempMod_Choice <- summary(tempMod_Choice)
+  
+  #Predict affect (1&2) from outcome
+  if (unique(x$subject) %in% noAffect12ChangeSubs){
+    #If affect 1 and affect 2 show no difference, do just an uni anova
+    tempMod_Affect <- lm(affect1 ~ outcomeChoice, data = x)
+    p_tempMod_Affect <- summary(tempMod_Affect)
+    pMan = 2
+    pAffect2 = 2
+    pAffect1 = p_tempMod_Affect$coefficients[2,4]
+  } else {
+    #Otherwise predict affect1 & affect2 from outcome
+    Y <- cbind(x$affect1, x$affect2)
+    tempMod_Affect <- manova(Y ~ outcomeChoice, x)
+    p_tempMaov <- summary(tempMod_Affect, test="Pillai")
+    p_tempUaov <- summary.aov(tempMod_Affect) 
+    pMan = p_tempMaov[["stats"]][1,6]
+    pAffect1 = p_tempUaov[[" Response 1"]][["Pr(>F)"]][1]
+    pAffect2 = p_tempUaov[[" Response 2"]][["Pr(>F)"]][1]
+  }
+  return(data.frame(betaEV = tempMod_Choice[["coefficients"]][["EV"]],betaR = tempMod_Choice[["coefficients"]][["R"]],betaD = tempMod_Choice[["coefficients"]][["D"]], 
+         pEV = p_tempMod_Choice$coefficients[2,4], pR = p_tempMod_Choice$coefficients[3,4],pD = p_tempMod_Choice$coefficients[4,4], pMan = pMan,
+         pAffect1 = pAffect1, pAffect2 = pAffect2))
+}
+
+#x <- subset(dataClean, subject == 15779)
+
+ChoiceEV_R_D_df <- ddply(dataClean, .(subject), ExperimentEffects_fun)
+
+#Complete separartion for EV~ choice for these participants. Replace pvalue with 0
+ChoiceEV_R_D_df[ChoiceEV_R_D_df$subject %in% c(72301, 69883, 9878), ]$pEV <- 0
+
+#Reshape
+ChoiceEV_R_D_df_pvalue <- gather(subset(ChoiceEV_R_D_df, select = c('subject','pEV','pR','pD', 'pMan','pAffect1','pAffect2')), variable, pvalue, pEV:pAffect2)
+ChoiceEV_R_D_df_pvalue$f_variable <- factor(ChoiceEV_R_D_df_pvalue$variable,
+                                            levels = c('pEV','pR','pD', 'pMan','pAffect1','pAffect2'),
+                                            labels = c('pEV','pR','pD', 'pMan','pAffect1','pAffect2'))
+
+```
+
+Ok, this gives a nice overview. What do we see?  
+The smaller average p value, the more likely that there is an effect for the group.  
+- There are strong effects of EV on choice and Outcome on affect (1 & 2).  
+- It looks as if regret and dissapointment do not influence choice on average.  
+- There are some participants weirdly not influenced by affect or expected value, let's look into them further.
+
+```{r p values of all effects}
+
+ggplot(ChoiceEV_R_D_df_pvalue, aes(f_variable, pvalue, color = subject, group = subject)) + geom_line() +geom_point() + theme_bw() + 
+  scale_color_gradient(low = twocolors[2], high = twocolors[1])
+
+```
+
+What is going on with those people that do not show an effect of outcome on affect? This seems strange.
+
+Only plot data for the people without effect of outcome on affect to see if strange things happened for the other experiment effects. All participants demonstrate an effect of EV on choice except participant 25291. This participants will be removed anyway based on other measures. 
+```{r affect 12 outcome effect}
+
+noAffectOutcome_pp <- subset(ChoiceEV_R_D_df_pvalue, (variable == 'pMan' & pvalue>0.1))$subject
+length(noAffectOutcome_pp)
+length(noAffect12ChangeSubs)
+noAffectOutcome_pp[noAffectOutcome_pp %in% noAffect12ChangeSubs90]
+
+
+#Only plot data for the people without effect of outcome on affect.
+ggplot(subset(ChoiceEV_R_D_df_pvalue, subject %in% noAffectOutcome_pp), aes(f_variable, pvalue, color = factor(subject), group = subject)) + 
+  geom_line() +geom_point() + theme_bw() + labs(color = 'subject', x = 'p-value per variable')
+  
+
+```
+
+
+Plot all participants that did not demonstrate an effect of expected value on choice.
+No effects of any experiment measures for participants 52726 seems to be messing around... what to do about it?
+
+```{r pvalues ev choice}
+
+noEVChoice_pp <- subset(ChoiceEV_R_D_df_pvalue, (variable == 'pEV' & pvalue>0.1))$subject
+length(noEVChoice_pp)
+
+#Plot data for participants that did not show effect of EV on choice
+ggplot(subset(ChoiceEV_R_D_df_pvalue, subject %in% noEVChoice_pp), aes(f_variable, pvalue, color = factor(subject), group = subject)) + 
+  geom_line() +geom_point() + theme_bw() + labs(color = 'subject', x = 'p-value per variable')
+
+#These participants are exceptional.. but attentive none the less I would say. Some factors impact behavior.
+ggplot(subset(ChoiceEV_R_D_df_pvalue, subject %in% c(45012, 43414, 52726)), aes(f_variable, pvalue, color = factor(subject), group = subject)) + 
+  geom_line() +geom_point() + theme_bw() + labs(color = 'subject', x = 'p-value per variable')
+  
+
+```
+
+## Final verdict 
+
+My suggestion is to remove the following subjects:  
+14055, 31657, 57344, 15779, 25291, 59491  
+
+These participants are indicated in the following table in column 'Inge'  
+
+```{r Final verdict}
+
+
+suspects <- unique(c(failedPracticeSubjects,toofastChoiceRT, slowRTsubjects, 
+                          noEVChoice_pp, noVarAffectRppnrs, noAffect12ChangeSubs, noAffect12ChangeSubs90, noAffectOutcome_pp,
+                          slowRTdatapoint_pp))
+removeSubjectNrs <- c(14055, 31657, 57344, 15779, 25291, 59491)
+
+#Print nice table
+suspectsDF <- data.frame(Subject = as.numeric(as.character(suspects)),
+                         noEVChoice = as.character(suspects %in% noEVChoice_pp), 
+                         
+                         noVarianceAffect = as.character(suspects %in% noVarAffectRppnrs),
+                         noAffectChange = as.character(suspects %in% noAffect12ChangeSubs),
+                         noAffectChange90 = as.character(suspects %in% noAffect12ChangeSubs90),
+                         #noAffec1Outcome = as.character(suspects %in% noAffec1Outcome_pp), 
+                         #noAffec2Outcome = as.character(suspects %in% noAffec2Outcome_pp), 
+                         failedPractice = as.character(suspects %in% failedPracticeSubjects), 
+                         fastRT = as.character(suspects %in% toofastChoiceRT),
+                         slowAverageRT = as.character(suspects %in% slowRTsubjects),
+                         slowDatapointRT = as.character(suspects %in% slowRTdatapoint_pp),
+                         Inge = as.character(suspects %in% removeSubjectNrs))
+
+
+i <- sapply(suspectsDF, is.factor)
+suspectsDF[i] <- lapply(suspectsDF[i], as.character)
+suspectsDF[suspectsDF == 'FALSE'] <- ''
+suspectsDF[suspectsDF$Inge == 'TRUE',]$Inge <- '1'
+kable(suspectsDF)
+
+```
+
+#### save dataframe for analysis
+
+```{r save }
+
+#Flag subjects
+dataClean$removeSubjects <- 'no'
+dataClean[dataClean$subject %in% removeSubjectNrs, ]$removeSubjects <- 'yes'
+
+dataClean$suspects <- NULL
+dataClean$affect1Suspects <- NULL
+dataClean$affect2Suspects <- NULL
+
+#Flag too slow choices
+dataClean$issuesRT <- 0
+dataClean[dataClean$affect1RT>60000 |
+            dataClean$affect1RT<200 |
+            dataClean$affect2RT>60000 |
+            dataClean$affect2RT<200 |
+            dataClean$choiceRT>60000 |
+          dataClean$choiceRT<200, ]$issuesRT <- 1
+
+#Removed 17 responses.
+nrow(dataClean[dataClean$issuesRT == 1,])
+
+#Monomorphs
+dataClean$monomorph <- 0
+dataClean[dataClean$subject %in% c(15779, 25291),]$monomorph <- 1
+
+#Save
+save(dataClean, file = paste(analysesDir,'/dataClean.Rdata', sep = ''))
+```

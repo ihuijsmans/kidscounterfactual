@@ -1,0 +1,358 @@
+---
+title: "Counterfactual DM in maltreated kids: Analyze Data"
+output: html_document
+author: Inge Huijsmans
+---
+
+### Task and data information  
+
+_Task: Counterfactual Decision Making_  
+Baskin-Sommers, A., Stuppy-Sullivan, A. M., & Buckholtz, J. W. (2016). Psychopathic individuals exhibit but do not avoid regret during counterfactual decision making. Proceedings of the National Academy of Sciences, 113(50), 14438-14443.
+
+_Link to task:_  
+http://snplab.fas.harvard.edu/adcf/  
+Note. If you do the task use your own name as subject number (NO DIGITS). This way we can never confuse pilot data with participant data.
+
+_Links to data:_    
+usern: sdlab   
+passw: stressDEV1   
+http://snplab.fas.harvard.edu/adcf/data    
+http://snplab.fas.harvard.edu/adcfremote/data    
+
+_Google drive folder Frankie & Mahalia:_  
+https://drive.google.com/drive/folders/100at88UR1CjjLLPHCn1el5LpHb7WwfTs
+
+
+#### Task parameters to test
+
+__affect__  
+q1: Does outcome & chanceCF predict affect 1  
+affect1 ~ outcome  + chanceCF + (outcome + chanceCF|subject)  
+
+q2: Does outcome predict affect 2, above & beyond affect rating 1 & does agent counterfactual  
+affect2 ~ outcome + affect1 + (outcome + affect1|subject)  
+affect2 ~ outcome + agenctCF + (outcome + agenctCF|subject)  
+
+#Perhaps add chanceCF here too to control for shared variance.  
+
+__choice__  
+choice ~ EV + R + D + (EV + R + D|subject)  
+
+__Individual Variability__  
+-adversity/trauma   
+-SES  
+-age  
+-gender   
+-education  
+
+# Let's go!
+
+#### Setup some R things
+```{r setup, message = FALSE, warning = FALSE }
+
+options(repos = c(CRAN = "http://cran.rstudio.com"))
+#install.packages('lme4', dependencies=TRUE, repos='https://ftp.ussg.iu.edu/CRAN/')
+
+
+require(plyr)      # for ddply()
+require(ggplot2)
+require(tidyr)     #for long to wide, gather & spread <3
+require(tidyverse) 
+
+require(emmeans)
+require(lme4)
+require(lmerTest)
+require(afex)
+
+require(rstan)
+require(brms)
+
+
+options(digits=20)
+#loadfonts(device="win")
+ 
+rm(list=ls())
+
+
+#Set wd Harvard
+#wd <- '/Users/ingehuijsmans/OneDrive - Harvard University/KidsDecision/'
+#Set wd Wageningen
+wd <- '/Users/rhmhuijsmans/OneDrive - Harvard University/KidsDecision/'
+dataDir <- paste(wd, 'data/', sep = '')
+analysesDir <- paste(wd, 'analyses/', sep = '')
+plotsDir <- paste(wd, 'plots/', sep = '')
+
+#Function for axis rounding
+twoDecimals <- function(x) sprintf("%.2f", x)
+
+#Set colors
+fivecolors <- c('#003f5c','#58508d','#bc6090','#ff6361','#ffa600')
+twocolors <- fivecolors[c(2,4)]
+sevencolors <- c('#C70039','#FF5733', '#FF8D1A','#FFC300', '#EDDD53', '#ADD45C','#57C785')
+
+#Load & save environment data
+load(paste(analysesDir,'/dataClean.Rdata', sep = ''))
+
+#save.image(paste(analysesDir,'/workspace.Rdata', sep = ''))
+
+#Remove data that were selected in dataClean.Rmd
+data <- subset(dataClean, issuesRT == 0 & monomorph == 0)
+
+demograpfics <- read.table(paste(dataDir, 'MT_DATA FOR BUCKHOLTZ LAB_4.15.19.csv',sep = ''),
+                           quote = "\"", sep = ",", header = TRUE)
+
+#I don't have the ID-subject key to match participants.
+
+data$f_outcomeMissed <- factor(data$outcomeMissed)
+#Higher numbers = happier in second rating
+data$changeAffect <- data$affect2 - data$affect1
+
+#Scale predictors
+data$sc_EV <- (data$EV - mean(data$EV))/sd(data$EV)
+data$sc_R <- (data$R - mean(data$R))/sd(data$R)
+data$sc_D <- (data$D - mean(data$D))/sd(data$D)
+data$sc_agentCF <- (data$agentCF - mean(data$agentCF))/sd(data$agentCF)
+data$sc_affect1 <- (data$affect1 - mean(data$affect1))/sd(data$affect1)
+
+#Variable names 'missed outcome' and 'agentcf' I don't like. Change to these two:
+#choiceCF, the missed outcome based on choice (other wheel)
+#chanceCF, the missed outcome based on luck (same wheel)
+#In these variables, don't yet control for actual outcome, let the model do that to avoid confusion.
+
+data$choiceCF <- data$outcomeMissed
+data$chanceCF <- 9999
+
+#W1
+data[(data$chosenCircle == 'circle1') & (data$outcomeChoice == data$x1),]$chanceCF <- data[data$chosenCircle == 'circle1' & data$outcomeChoice == data$x1,]$y1
+data[(data$chosenCircle == 'circle1') & (data$outcomeChoice == data$y1),]$chanceCF <- data[data$chosenCircle == 'circle1' & data$outcomeChoice == data$y1,]$x1
+#W2
+data[(data$chosenCircle == 'circle2') & (data$outcomeChoice == data$x2),]$chanceCF <- data[data$chosenCircle == 'circle2' & data$outcomeChoice == data$x2,]$y2
+data[(data$chosenCircle == 'circle2') & (data$outcomeChoice == data$y2),]$chanceCF <- data[data$chosenCircle == 'circle2' & data$outcomeChoice == data$y2,]$x2
+
+data$f_chanceCF <- factor(data$chanceCF)
+
+data$sc_outcomeChoice <- (data$outcomeChoice - mean(data$outcomeChoice))/sd(data$outcomeChoice)
+data$sc_chanceCF <- (data$chanceCF - mean(data$chanceCF))/sd(data$chanceCF)
+
+
+
+```
+
+q1. a. Are participants happier when they get more money?  
+    b. Does chanceCF affect their happiness over and obove outcome?  
+    
+Test: affect1 ~ outcome + chanceCF  
+Outcome: From visual inspection there seem two main effects, and an interaction effect.
+Main effect Outcome: From left to right, panels increase, demonstrating that for higher outcome particpants felt higher affect.
+Main effect ChanceCF: In the two middle panels (-70 & 70), you see that the outcome that participants missed based on chance affects participants' affect rating. If they missed a high loss, they raport higher happiness. 
+Interaction: The effec of chanceCF seems to not exist in -210 ad 210 conditions, perhaps due to floor/ceiling effects.
+
+```{r Outcome affect 1}
+
+ddply(data, .(f_outcomeChoice, f_chanceCF), summarize, mAffect1 = mean(affect1))
+
+ggplot(data, aes(f_chanceCF, affect1, fill = f_chanceCF)) + 
+  facet_wrap(~f_outcomeChoice, ncol = 4)+
+  geom_boxplot() + 
+  scale_fill_manual(values = fivecolors) +
+  theme_bw() + labs(x = '', y = 'Affect rating 1', fill = 'Outcome Missed (Chance)')
+
+```
+
+Do the stats
+Model:
+affect1 ~ f_outcomeChoice * f_chanceCF +  (f_outcomeChoice * f_chanceCF|subject)
+
+Two types of calculations: 
+1. Frequentist (lme4 & lmerTest: Satterthwaite's method for p-values)
+2. Bayesian (brm & rstan)
+
+Frequentist:
+Outcome: F(1,125.94) = 538.92, p<.001
+ChanceCF: F(1,122.38) = 68.91, p<.001
+O*C: F(1,122.03) = 61.74, p<.001
+
+Bayesian 
+
+```{r stats affect outcome}
+
+
+
+#Statistical test
+modAf1 <- lmer(affect1 ~ sc_outcomeChoice * sc_chanceCF +  (sc_outcomeChoice * sc_chanceCF|subject), data = data, control = lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e4)))
+
+summary(modAf1)
+anova(modAf1, type = '3')
+
+#Previous models assumes factors are continuous. However, this is not the case. 
+#Problems
+#-is singular
+#Rank deficient
+#Failed to converge
+modAf1_f <- lmer(affect1 ~ f_outcomeChoice * f_chanceCF +  (f_outcomeChoice * f_chanceCF|subject), data = data, control = lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)))
+
+summary(modAf1_f)
+anova(modAf1_f, type = '3')
+
+
+#Awesome tutorial 1
+#https://www.rensvandeschoot.com/tutorials/brms-started/
+  
+#Bayes version of the same
+modAfCCF1_B <- brm(affect1 ~ f_outcomeChoice * f_chanceCF + (f_outcomeChoice * f_chanceCF|subject), data = data,
+family = 'gaussian',
+prior = set_prior('normal(0, 5)'), 
+iter = 4000, warmup = 1000,
+control = list(adapt_delta = 0.95),
+chains = 4,
+cores = 4
+)
+
+summary(modAfCCF1_B, waic = TRUE)
+
+fixef(modAfCCF1_B)
+coef(modAfCCF1_B)
+
+
+#Bayes version of monotonic variables (ordered factors)
+#https://cran.r-project.org/web/packages/brms/vignettes/brms_monotonic.html
+modAfCCF1_mo_B <- brm(affect1 ~ mo(outcomeChoice) * mo(chanceCF) + (mo(outcomeChoice) * mo(chanceCF)|subject), 
+                      data = data,
+family = 'gaussian',
+prior = set_prior('normal(0, 5)'), 
+iter = 4000, warmup = 1000,
+control = list(adapt_delta = 0.95),
+chains = 4,
+cores = 4
+)
+
+summary(modAfCCF1_mo_B, waic = TRUE)
+fixef(modAfCCF1_mo_B)
+coef(modAfCCF1_mo_B)
+
+
+library(emmeans)
+emmeans(modAfCCF1_B,pairwise~noise_level*token)
+
+```
+
+Why dont we add chanceCF in the equation. 
+
+lmer does not seem to converge. We'll run into problems trying to fit glmer (EV|subject) anyway because there is complete separation for some participants. Shall we switch to bayesian? 
+-Pro, well it's basically awesome. Avoids convergence issues (we're not even testing individual differences yet :o), p value dramas, complete seperation issues and we can do mixed models as we're used to.    
+-Con, 1. It takes so long. I can try to secretly do these models on the cluster, sst. 2. I have to figure out a way to obtain bayes factors. I did this before, dig up old scripts
+
+
+```{r affect1 outcomeChoice chanceCF}
+
+#
+modAf2 <- lmer(affect2~ sc_outcomeChoice + sc_affect1 + (sc_outcomeChoice + sc_affect1|subject), data = data, control = lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)))
+
+summary(modAf2)
+anova(modAf2, type = '3')
+
+#Convergence issues....
+modAf2_f <- lmer(affect2~ f_outcomeChoice + sc_affect1 + (sc_outcomeChoice + sc_affect1|subject), data = data, control = lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)))
+
+summary(modAf2_f)
+anova(modAf2_f, type = '3')
+
+
+
+```
+
+2. Are participants still happier when they get more money after knowing what they could have had?   
+__Test:__ changeAffect (2-1) ~ outcomeChoice + choiceCF 
+__Outcome:__ It looks like we're hitting ceiling and floor effects for outcome 210 and -210...
+
+```{r Outcome affect 2}
+
+#ICC
+
+ddply(data, .(f_outcomeMissed,f_outcomeChoice), summarize, mAffect1 = mean(affect1), mAffect2 = mean(affect2), mChangeAF = mean(changeAffect))
+ddply(data, .(f_outcomeChoice,f_outcomeMissed), summarize, mAffect1 = mean(affect1), mAffect2 = mean(affect2), mChangeAF = mean(changeAffect))
+
+ggplot(data, aes(f_outcomeMissed, changeAffect, fill = f_outcomeMissed)) + 
+  facet_wrap(~factor(outcomeChoice)) +
+  #geom_point()+
+  geom_violin() + 
+  #scale_fill_manual(values = fivecolors) +
+  theme_bw() + labs(x = 'Outcome Missed', y = 'Affect rating 1', fill = 'Outcome')
+
+#Statistical test
+modChangeAffect <- lmer(changeAffect ~ f_outcomeMissed*f_outcomeChoice + (f_outcomeChoice* f_outcomeMissed|subject), data = data, control = lmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)))
+
+summary(modAf2)
+anova(modAf2, type = '3')
+
+
+
+```
+
+
+Next question: 
+2. Do participants choose the wheel with highest expected value?  
+
+__Test:__ choice ~ EV + R + D
+__Outcome:__ EV & D affect choice
+
+
+```{r EV choice}
+
+#aggregate(real ~ corpus, df, mean)
+
+
+ggplot(data, aes(EV, n_chosenCircle,colour = f_chosenCircle)) + geom_point(size = 10, alpha = 0.05) + 
+  stat_smooth(aes(group = 1),method="glm", formula = y~x, method.args=list(family="binomial"), se=TRUE, color = 'black') +
+  theme_bw() + scale_color_manual(values = twocolors) + labs(x = '', y = 'P(Wheel 1)', labs = 'Choice') +
+  guides(colour = guide_legend(override.aes = list(alpha = 1)))
+
+#Problems with singular fits. switch to bayesian?
+modEVChoice <- glmer(n_chosenCircle ~ sc_EV + sc_R + sc_D + (sc_EV + sc_R + sc_D|subject), data = data, binomial(link = "logit"), control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)))
+
+summary(modEVChoice)
+anova(modAf1, type = '3')
+
+install.packages('brms')
+#+ sc_R + sc_D
+mod <- brm(n_chosenCircle ~ sc_EV + sc_R + sc_D + (sc_EV + sc_R + sc_D|subject), data = data,
+family = 'binomial',
+prior = set_prior('normal(0, 5)'), 
+iter = 1000, #0, warmup = 1000,
+chains = 4,
+cores = 4
+)
+
+summary(mod, waic = TRUE)
+bayes_factor(mod)
+#Model convergence 
+#1. look at RHat
+#2. plot(mod)
+
+#Reasonable fit? pp_check(mod)
+#plot model predictions marginal_effects(mod)
+```
+
+Anticipated regret
+
+```{r R choice}
+
+ggplot(data, aes(R, n_chosenCircle,colour = f_chosenCircle)) + geom_point(size = 10, alpha = 0.05) + 
+  stat_smooth(aes(group = 1),method="glm", formula = y~x, method.args=list(family="binomial"), se=TRUE, color = 'black') +
+  theme_bw() + scale_color_manual(values = twocolors) + labs(x = '', y = 'P(Wheel 1)', labs = 'Choice') +
+  guides(colour = guide_legend(override.aes = list(alpha = 1)))
+
+
+```
+
+Dissapointment 
+
+```{r D choice}
+
+ggplot(data, aes(D, n_chosenCircle,colour = f_chosenCircle)) + geom_point(size = 10, alpha = 0.05) + 
+  stat_smooth(aes(group = 1),method="glm", formula = y~x, method.args=list(family="binomial"), se=TRUE, color = 'black') +
+  theme_bw() + scale_color_manual(values = twocolors) + labs(x = '', y = 'P(Wheel 1)', labs = 'Choice') +
+  guides(colour = guide_legend(override.aes = list(alpha = 1)))
+
+
+```
